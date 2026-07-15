@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>florr.io</title>
+<meta name="application-name" content="florr.io">
+<meta name="description" content="Fight other flowers for garden dominance">
+<meta name="msapplication-TileColor" content="#181818">
+<meta name="theme-color" content="#181818">
+<style>
+body {
+	background-color: #181818;
+}
+</style>
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="favicon-32x32.png" sizes="32x32">
+<link rel="icon" type="image/png" href="favicon-16x16.png" sizes="16x16">
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="viewport" content="user-scalable=no, width=device-width, height=device-height, initial-scale=1, shrink-to-fit=no, viewport-fit=cover">
+<link rel="manifest" href="manifest.json">
+<style>
+
+html, body, #canvas {
+	border: 0;
+	margin: 0;
+	padding: 0;
+	overflow: hidden;
+}
+
+a, a:visited {
+	color: #3333FF;
+	text-decoration: none
+}
+
+a:hover {
+	color: #6666FF;
+}
+
+#status-container {
+	color: #FFFFFF;
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	font-size: 48pt;
+	font-family: sans-serif;
+	font-weight: bold;
+	cursor: default;
+	text-align: center;
+}
+
+#status-container small {
+	font-size: 50%;
+}
+
+#canvas {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	width: 100%;
+	height: 100%;
+	cursor: default;
+}
+
+#canvasOverlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+}
+
+#textInputContainer {
+	display: none;
+	position: absolute;
+}
+
+#textInput {
+	background-color: transparent;
+	font-family: 'Ubuntu';
+	padding: 0;
+	border: 0;
+	outline: none;
+}
+
+</style>
+</head>
+<body>
+
+<link href='https://fonts.googleapis.com/css?family=Ubuntu:700' rel='stylesheet' type='text/css'>
+<div id="status-container">
+	<span id="loading">Loading...</span>
+	<span id="unsupported" style="display: none;">
+		Your browser isn't supported<br />
+		<small>
+			try <a href="//chrome.google.com">Google Chrome</a> or <a href="https://www.mozilla.org/en-US/firefox/">Firefox</a><br />
+		</small>
+	</span>
+	<span id="errorDialog" style="display: none;">
+		Error<br />
+		<small>
+			Uninstall any scripts you may have,<br />as they might be interfering with the game<br />
+		</small>
+	</span>
+</div>
+
+<canvas id="canvas" width="800" height="800" style="display: none;" oncontextmenu="return false;"></canvas>
+
+<div style="font-family:'Ubuntu'">&nbsp;</div>
+<div id="textInputContainer"><input id="textInput" /></div>
+
+<script>
+	
+window["Module"] = window["Module"] || {};
+Module.canvas = document.getElementById("canvas");
+
+function isBrowserSupported(){
+	var canvas = document.createElement("canvas");
+	if(!canvas || !canvas.getContext) return false;
+	
+	//var gl = canvas.getContext("webgl2") || canvas.getContext("experimental-webgl2");
+	//if(!gl) return false;
+	
+	//if(!window["URL"] || !URL.createObjectURL) return false;
+	
+	return true;
+}
+
+(function(window, document){
+	if(!isBrowserSupported()){
+		document.getElementById("loading").style.display = "none";
+		document.getElementById("unsupported").style.display = "block";
+		document.getElementById("errorDialog").style.display = "none";
+		return;
+	}
+	
+	if(window.top != window.self){
+		document.getElementById("loading").innerText = "Please visit florr.io directly";
+		window.top.location = "https://florr.io/";
+		return;
+	}
+	
+	// Remove "cp6_version" from url, used during updates to skip cache
+	var url = new URL(window.location);
+	if(url.searchParams.get("cp6_version")){
+		url.searchParams.delete("cp6_version");
+		window.history.replaceState({}, document.title, url);
+	}
+	
+	document.getElementById("canvas").style.display = "block";
+	
+	var gameScript = document.createElement('script');
+	gameScript.async = true;
+	gameScript.type = 'text/javascript';
+	// Loading errors can happen shortly after an update if the file isn't quite ready at static storage when servers are up
+	// Better to just try again instead of hanging. It's still really bad and shouldn't happen though.
+	gameScript.onerror = function(){ setTimeout(function(){ window.location.reload(true); }, 500); };
+	gameScript.onload = function(){};
+	gameScript.src = "client.js";
+	var node = document.getElementsByTagName('script')[0];
+	node.parentNode.insertBefore(gameScript, node);
+})(window, document);
+</script>
+
+<!-- Cloudflare RUM challenge + insights beacon removed for local/LAN serving (they call static.florr.io and error out) -->
+</body>
+</html>

@@ -1,0 +1,11 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Scratch / local notes
+error_message.txt
