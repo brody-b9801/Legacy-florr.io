@@ -115,7 +115,106 @@ a:hover {
 <div id="textInputContainer"><input id="textInput" /></div>
 
 <script>
-	
+/* ==== PROTOCOL CAPTURE HARNESS (Phase 1, removable) ====================
+ * Passively taps the worker channel from the PAGE side only. Does NOT touch
+ * the worker's own message handling, so it cannot break the connection.
+ *   C2S = worker.postMessage(...) calls the game makes  (funcName sp_server_send = input)
+ *   S2C = 'message' events from the worker              (data = server world updates)
+ *
+ * In DevTools console:
+ *   __proto.count()       -> packets captured so far
+ *   __proto.summary()     -> counts grouped by direction / funcName / length
+ *   copy(__proto.dump())  -> full JSON capture to clipboard (save as capture1.json)
+ *   __proto.clear()       -> reset
+ * ====================================================================== */
+(function(){
+  var log = [];
+  var seq = 0;
+  function toU8(x){
+    if(!x) return null;
+    if(x instanceof Uint8Array) return x;
+    if(x instanceof ArrayBuffer) return new Uint8Array(x);
+    if(x.buffer instanceof ArrayBuffer) return new Uint8Array(x.buffer, x.byteOffset||0, x.byteLength);
+    return null;
+  }
+  function hex(u8){
+    if(!u8 || !u8.length) return "";
+    var s="", n=Math.min(u8.length,8192);
+    for(var i=0;i<n;i++){ var h=u8[i].toString(16); s+=(h.length<2?"0":"")+h; }
+    return s;
+  }
+  function record(dir, name, u8){
+    log.push({ seq: seq++, t: performance.now(), dir: dir, name: name||"",
+               len: u8?u8.length:0, hex: hex(u8) });
+  }
+  var diag = { post:0, onmsgSet:0, addEvt:0, s2c:0, c2s:0 };
+  window.__proto = {
+    log: log,
+    diag: diag,
+    count: function(){ return log.length; },
+    clear: function(){ log.length=0; seq=0; return "cleared"; },
+    dump: function(){ return JSON.stringify(log); },
+    summary: function(){
+      var by={}; log.forEach(function(r){
+        var k=r.dir+" "+r.name+" len="+r.len; by[k]=(by[k]||0)+1;
+      }); return by;
+    }
+  };
+
+  // Patch Worker.prototype methods directly so we catch EVERY worker no matter
+  // how it's constructed (blob URL, saved constructor ref, etc.).
+  var WP = window.Worker && window.Worker.prototype;
+  console.log("[proto] harness install, Worker present:", !!WP);
+  if(WP){
+    // C2S: every postMessage the page sends into a worker.
+    var origPost = WP.postMessage;
+    WP.postMessage = function(msg, transfer){
+      try {
+        diag.post++;
+        if(diag.post <= 3) console.log("[proto] postMessage seen, keys:", msg && typeof msg === "object" ? Object.keys(msg) : typeof msg);
+        if(msg && msg.funcName){ diag.c2s++; record("C2S", msg.funcName, toU8(msg.data)); }
+      } catch(e){ console.warn("[proto] post hook err", e); }
+      return origPost.apply(this, arguments);
+    };
+    // S2C via addEventListener("message", ...).
+    var origAdd = WP.addEventListener;
+    WP.addEventListener = function(type, fn, opts){
+      if(type === "message" && typeof fn === "function"){
+        diag.addEvt++;
+        var wrapped = function(ev){
+          try { var d=ev.data; if(d && d.data && !d.target){ diag.s2c++; record("S2C","response",toU8(d.data)); } } catch(e){}
+          return fn.apply(this, arguments);
+        };
+        return origAdd.call(this, type, wrapped, opts);
+      }
+      return origAdd.apply(this, arguments);
+    };
+    // S2C via onmessage = ... (this is what the florr client actually uses).
+    var onmsgDesc = Object.getOwnPropertyDescriptor(WP, "onmessage");
+    console.log("[proto] onmessage descriptor:", onmsgDesc ? Object.keys(onmsgDesc) : "none",
+                onmsgDesc && onmsgDesc.set ? "has-setter" : "no-setter");
+    if(onmsgDesc && onmsgDesc.configurable && onmsgDesc.set){
+      Object.defineProperty(WP, "onmessage", {
+        configurable: true, enumerable: onmsgDesc.enumerable,
+        get: onmsgDesc.get,
+        set: function(fn){
+          diag.onmsgSet++;
+          if(diag.onmsgSet <= 3) console.log("[proto] onmessage assigned on a worker");
+          if(typeof fn === "function"){
+            var wrapped = function(ev){
+              try { var d=ev.data; if(d && d.data && !d.target){ diag.s2c++; record("S2C","response",toU8(d.data)); } } catch(e){}
+              return fn.apply(this, arguments);
+            };
+            onmsgDesc.set.call(this, wrapped);
+          } else {
+            onmsgDesc.set.call(this, fn);
+          }
+        }
+      });
+    }
+  }
+})();
+
 window["Module"] = window["Module"] || {};
 Module.canvas = document.getElementById("canvas");
 
