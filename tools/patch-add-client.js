@@ -9,7 +9,7 @@
 // itself, and leaves the new client's index in $p1 (-1 on entry).
 //
 //   npx wasm2wat --generate-names sp_server.wasm -o sp_named.wat
-//   node tools/patch-add-client.js sp_named.wat sp_mp.wat [--all-drops]
+//   node tools/patch-add-client.js sp_named.wat sp_mp.wat [--all-drops | --no-mobs]
 //   npx wat2wasm sp_mp.wat -o florr-local/static.florr.io/old/sp_server.mp.wasm
 
 const fs = require('fs');
@@ -92,6 +92,20 @@ if (process.argv.includes('--all-drops')) {
   if (hit < 0) throw new Error('drop roll comparison not found in $f144');
   lines.splice(hit, 1, '    f32.lt', '    drop', '    i32.const 1');
   console.log(`--all-drops: patched drop roll in $f144 at line ${hit + 1}`);
+}
+
+// --no-mobs: the world never spawns mobs. $f113 (dcmp f_jd) spawns one mob in
+// zone $p0 and returns nonzero on success; the population loop ($f_ko) keeps
+// calling it until each zone's count reaches its target, and stops as soon as it
+// returns 0. Returning 0 up front leaves every zone empty. Entities spawned by
+// petals (egg hatches, peas, etc.) use other paths and still work.
+if (process.argv.includes('--no-mobs')) {
+  const s = lines.findIndex((l) => l.startsWith('  (func $f113 (type $t1) (param $p0 i32) (result i32)'));
+  if (s < 0 || !/^    \(local /.test(lines[s + 1]) || trim(s + 2) !== 'global.get $g0' || trim(s + 8) !== 'i32.const 4') {
+    throw new Error('mob spawn function $f113 not found or changed');
+  }
+  lines.splice(s + 2, 0, '    i32.const 0', '    return');
+  console.log(`--no-mobs: $f113 (zone mob spawn) now returns 0 at line ${s + 3}`);
 }
 
 const firstExport = lines.findIndex((l) => /^  \(export /.test(l));

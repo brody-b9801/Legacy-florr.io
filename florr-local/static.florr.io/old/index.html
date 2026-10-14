@@ -244,7 +244,8 @@ a:hover {
  * server/index.js (/ws), which runs the server side. ?mp=host:port targets
  * another server. Without ?mp the original local worker is used.
  * Wire format matches server/index.js. Dropped connections resume the same
- * player via a session token (the server holds it for 45 s).
+ * player via a session token (the server holds it for 45 s). The title screen's
+ * spawn menu (spawn-menu.js) sends its loadout as func 5.
  * ====================================================================== */
 (function(){
   var mp = new URL(window.location).searchParams.get("mp");
@@ -258,6 +259,7 @@ a:hover {
 
   var WS_BASE = (location.protocol === "https:" ? "wss://" : "ws://") + host + "/ws";
   var SESSION_CB = -2;            // server -> page: session token (see server/index.js)
+  var ALIVE_CB = -3;              // server -> page: player has a flower (1) or not (0)
   var KEEPALIVE_MS = 5000;        // page -> server: func 4, keeps hidden tabs alive
   var GIVE_UP_MS = 40000;         // server holds a dropped player for 45 s
   var CLOSE_UNKNOWN_SESSION = 4000;
@@ -287,6 +289,7 @@ a:hover {
     this._closedByGame = false;
     this._offlineSince = 0;
     this._retryMs = 500;
+    this._loadout = null;      // last spawn menu frame (func 5)
     this._connect();
     this._keepalive = setInterval(function(){
       if(self._ws && self._ws.readyState === 1) self._ws.send(new Uint8Array([4, 0, 0, 0, 0]));
@@ -301,12 +304,17 @@ a:hover {
       self._offlineSince = 0;
       self._retryMs = 500;
       if(self._queue){ self._queue.forEach(function(b){ ws.send(b); }); self._queue = null; }
+      if(self._loadout) ws.send(self._loadout); // (re)send the spawn menu's choice
     };
     ws.onmessage = function(ev){
       var v = new DataView(ev.data);
       var cb = v.getInt32(0, true);
       if(cb === SESSION_CB){
         self._session = new TextDecoder().decode(new Uint8Array(ev.data, 5));
+        return;
+      }
+      if(cb === ALIVE_CB){
+        window.dispatchEvent(new CustomEvent("florr-alive", { detail: new Uint8Array(ev.data)[5] === 1 }));
         return;
       }
       var data = ev.data.byteLength > 5 ? new Uint8Array(ev.data, 5) : 0;
@@ -340,6 +348,15 @@ a:hover {
     // While reconnecting, calls are dropped: flushes repeat every frame, and the
     // server ignores missing input counters.
   };
+  // Spawn menu choice (JSON string, see loadout.js); kept and resent on reconnect.
+  TunnelWorker.prototype.sendLoadout = function(json){
+    var bytes = new TextEncoder().encode(json);
+    var b = new Uint8Array(5 + bytes.length);
+    b[0] = 5;
+    b.set(bytes, 5);
+    this._loadout = b;
+    if(!this._queue && this._ws.readyState === 1) this._ws.send(b);
+  };
   TunnelWorker.prototype.terminate = function(){
     this._closedByGame = true;
     clearInterval(this._keepalive);
@@ -357,6 +374,10 @@ a:hover {
   window.Worker.prototype = RealWorker.prototype;
 })();
 
+</script>
+<script src="loadout.js"></script>
+<script src="spawn-menu.js"></script>
+<script>
 window["Module"] = window["Module"] || {};
 Module.canvas = document.getElementById("canvas");
 
