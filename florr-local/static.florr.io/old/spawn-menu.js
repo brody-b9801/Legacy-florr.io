@@ -12,11 +12,11 @@
   var mp = new URL(window.location).searchParams.get('mp') !== null;
 
   // Petal ids 1..38 as in sp_server's petal table (name, rarity, short note).
-  var RARITIES = [
-    { name: 'Common', color: '#7eef6d' }, { name: 'Unusual', color: '#ffe65d' },
-    { name: 'Rare', color: '#4d52e3' }, { name: 'Epic', color: '#861fde' },
-    { name: 'Legendary', color: '#de1f1f' }, { name: 'Unique', color: '#1fdbde' },
-  ];
+  var RARITIES = ['Common', 'Unusual', 'Rare', 'Epic', 'Legendary', 'Unique'];
+  // petals.png: the game's own petal cards, captured from its inventory bar.
+  // 70 px cards, 8 per row, id 1 at the top left.
+  var SHEET = 'petals.png', CARD = 70, COLS = 8, ROWS = 5;
+  var SLOT = 38, SLOT2 = 34, PICK = 38; // card sizes in the menu: petal slots, secondary slots, picker (8 per row)
   var PETALS = [null,
     ['Basic', 0, 'A nice petal, not too strong but not too weak'],
     ['Fast', 0, 'Weaker than most petals, but recharges very quickly'],
@@ -57,7 +57,8 @@
     ['Rice', 3, 'Spawns instantly, but not very strong'],
     ['Corn', 3, 'Takes a long time to spawn, but has a lot of health'],
   ];
-  var ZONE_NAMES = ['Zone 1 (west edge)', 'Zone 2', 'Zone 3', 'Zone 4 (east edge)'];
+  // The in-game map labels the west 30% Easy, the next 30% Medium, the rest Hard.
+  var ZONE_NAMES = ['Easy', 'Medium', 'Hard', 'Hard (east end)'];
 
   // ---- state ----------------------------------------------------------------
 
@@ -100,7 +101,7 @@
   // ---- UI -----------------------------------------------------------------------
 
   var css = '' +
-    '#spawnMenu{position:fixed;left:16px;top:50%;transform:translateY(-50%);z-index:50;width:296px;max-height:calc(100% - 32px);overflow:auto;' +
+    '#spawnMenu{position:fixed;left:16px;top:50%;transform:translateY(-50%);z-index:50;width:366px;max-height:calc(100% - 32px);overflow:auto;' +
     'box-sizing:border-box;padding:12px 14px;border-radius:10px;background:rgba(0,0,0,.45);border:3px solid rgba(0,0,0,.35);' +
     'font:700 13px Ubuntu,sans-serif;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000;user-select:none;display:none}' +
     '#spawnMenu h3{margin:0 0 8px;font-size:17px;display:flex;justify-content:space-between;align-items:center}' +
@@ -112,12 +113,12 @@
     '#spawnMenu .sm-zone{font-size:12px;opacity:.85;margin-bottom:8px}' +
     '#spawnMenu .sm-sub{font-size:12px;margin:6px 0 4px;opacity:.9}' +
     '#spawnMenu .sm-row{display:flex;flex-wrap:wrap;gap:4px}' +
-    '#spawnMenu .sm-slot,#spawnMenu .sm-petal{width:44px;height:44px;box-sizing:border-box;border-radius:6px;display:flex;align-items:center;justify-content:center;' +
-    'text-align:center;font-size:9.5px;line-height:1.05;cursor:pointer;border:3px solid rgba(0,0,0,.3);overflow:hidden;word-break:break-word}' +
-    '#spawnMenu .sm-slot{background:rgba(255,255,255,.12)}#spawnMenu .sm-slot.sel{outline:2px solid #fff;outline-offset:1px}' +
-    '#spawnMenu .sm-row.secondary .sm-slot{width:32px;height:32px;font-size:7.5px;border-width:2px}' +
-    '#spawnMenu .sm-palette{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:4px}' +
-    '#spawnMenu .sm-petal{width:auto}#spawnMenu .sm-petal:hover,#spawnMenu .sm-slot:hover{filter:brightness(1.15)}' +
+    '#spawnMenu .sm-slot,#spawnMenu .sm-petal{width:' + SLOT + 'px;height:' + SLOT + 'px;border-radius:3px;cursor:pointer;background-repeat:no-repeat}' +
+    '#spawnMenu .sm-slot{background-color:rgba(255,255,255,.12)}#spawnMenu .sm-slot.sel{outline:2px solid #fff;outline-offset:1px}' +
+    '#spawnMenu .sm-row.primary .sm-slot.empty{opacity:.4}' +
+    '#spawnMenu .sm-row.secondary .sm-slot{width:' + SLOT2 + 'px;height:' + SLOT2 + 'px}' +
+    '#spawnMenu .sm-palette{display:grid;grid-template-columns:repeat(8,' + PICK + 'px);gap:4px;margin-top:4px}' +
+    '#spawnMenu .sm-petal{width:' + PICK + 'px;height:' + PICK + 'px}#spawnMenu .sm-petal:hover,#spawnMenu .sm-slot:hover{filter:brightness(1.15)}' +
     '#spawnMenu .sm-btns{display:flex;gap:6px;margin-top:8px}' +
     '#spawnMenu button{flex:1;font:inherit;font-size:12px;color:#fff;text-shadow:inherit;background:rgba(255,255,255,.15);border:2px solid rgba(0,0,0,.35);border-radius:5px;padding:4px;cursor:pointer}' +
     '#spawnMenu button:hover{background:rgba(255,255,255,.25)}' +
@@ -127,14 +128,15 @@
 
   var root = null, body, levelRange, levelNum, zoneEl, primaryRow, secondaryRow, enabledBox;
 
-  function petalStyle(el, id) {
+  // Show petal id's card from the sprite sheet, scaled to the element's size (px).
+  function petalStyle(el, id, size) {
     var p = PETALS[id];
-    if (!p) { el.style.background = ''; el.style.borderColor = ''; el.textContent = ''; el.title = 'Empty'; return; }
-    var r = RARITIES[p[1]];
-    el.style.background = r.color;
-    el.style.borderColor = 'rgba(0,0,0,.3)';
-    el.textContent = p[0];
-    el.title = p[0] + ' (' + r.name + ')\n' + p[2];
+    if (!p) { el.style.backgroundImage = ''; el.title = 'Empty'; return; }
+    var k = size / CARD, i = id - 1;
+    el.style.backgroundImage = 'url(' + SHEET + ')';
+    el.style.backgroundSize = (COLS * size) + 'px ' + (ROWS * size) + 'px';
+    el.style.backgroundPosition = -(i % COLS) * CARD * k + 'px ' + -Math.floor(i / COLS) * CARD * k + 'px';
+    el.title = p[0] + ' (' + RARITIES[p[1]] + ')\n' + p[2];
   }
 
   function renderSlots() {
@@ -145,9 +147,9 @@
       el.innerHTML = '';
       ids.forEach(function (id, i) {
         var s = document.createElement('div');
-        s.className = 'sm-slot' + (sel.row === row && sel.i === i ? ' sel' : '');
-        petalStyle(s, id);
-        if (!id && row === 'primary') { s.textContent = 'Basic'; s.style.opacity = '.45'; s.title = 'Empty: spawns as Basic'; }
+        s.className = 'sm-slot' + (sel.row === row && sel.i === i ? ' sel' : '') + (id ? '' : ' empty');
+        petalStyle(s, id || (row === 'primary' ? 1 : 0), row === 'primary' ? SLOT : SLOT2);
+        if (!id && row === 'primary') s.title = 'Empty: spawns as Basic';
         s.onclick = function () { sel = { row: row, i: i }; renderSlots(); };
         s.oncontextmenu = function (e) { e.preventDefault(); state[row][i] = 0; changed(); };
         el.appendChild(s);
@@ -213,7 +215,7 @@
     ids.sort(function (a, b) { return PETALS[a][1] - PETALS[b][1] || a - b; });
     ids.forEach(function (id) {
       var el = document.createElement('div'); el.className = 'sm-petal';
-      petalStyle(el, id);
+      petalStyle(el, id, PICK);
       el.onclick = function () { pick(id); };
       pal.appendChild(el);
     });
