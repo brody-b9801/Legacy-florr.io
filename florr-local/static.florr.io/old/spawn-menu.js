@@ -224,9 +224,12 @@
 
   // Show the menu only on the title screen, i.e. while the player has no flower
   // (reported by the server over the tunnel, or by sp_worker.js).
-  var alive = false;
-  function setAlive(a) { alive = !!a; if (root) root.style.display = alive ? 'none' : 'block'; }
+  // On a server the room decides whether the menu is available (--spawn-menu,
+  // sent as {spawnMenu}); offline it always is.
+  var alive = false, allowed = !mp;
+  function setAlive(a) { alive = !!a; if (root) root.style.display = alive || !allowed ? 'none' : 'block'; }
   window.addEventListener('florr-alive', function (e) { setAlive(e.detail); });
+  window.addEventListener('florr-options', function (e) { allowed = !!(e.detail && e.detail.spawnMenu); setAlive(alive); });
 
   function start() { build(); setAlive(alive); }
   if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);

@@ -260,6 +260,7 @@ a:hover {
   var WS_BASE = (location.protocol === "https:" ? "wss://" : "ws://") + host + "/ws";
   var SESSION_CB = -2;            // server -> page: session token (see server/index.js)
   var ALIVE_CB = -3;              // server -> page: player has a flower (1) or not (0)
+  var OPTIONS_CB = -4;            // server -> page: room options JSON, e.g. {spawnMenu}
   var KEEPALIVE_MS = 5000;        // page -> server: func 4, keeps hidden tabs alive
   var GIVE_UP_MS = 40000;         // server holds a dropped player for 45 s
   var CLOSE_UNKNOWN_SESSION = 4000;
@@ -311,6 +312,10 @@ a:hover {
       var cb = v.getInt32(0, true);
       if(cb === SESSION_CB){
         self._session = new TextDecoder().decode(new Uint8Array(ev.data, 5));
+        return;
+      }
+      if(cb === OPTIONS_CB){
+        window.dispatchEvent(new CustomEvent("florr-options", { detail: JSON.parse(new TextDecoder().decode(new Uint8Array(ev.data, 5))) }));
         return;
       }
       if(cb === ALIVE_CB){

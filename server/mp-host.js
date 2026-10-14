@@ -38,6 +38,12 @@ const MP_WASM_ALL_DROPS = path.join(OLD, 'sp_server.mp.alldrops.wasm');
 // Same build with tools/patch-add-client.js --no-mobs: the world never spawns mobs.
 const MP_WASM_NO_MOBS = path.join(OLD, 'sp_server.mp.nomobs.wasm');
 
+// The server build for a room's options ({noMobs, allDrops}). Without mobs
+// there is nothing to drop, so noMobs wins.
+function worldWasm(opts) {
+  return fs.readFileSync(opts.noMobs ? MP_WASM_NO_MOBS : opts.allDrops ? MP_WASM_ALL_DROPS : MP_WASM);
+}
+
 // [start, end) byte ranges swapped per connection.
 const CONN_REGIONS = [
   [418876, 419240], // connection object ("local"); [0]=slot at 418880, counter at 418968
@@ -127,7 +133,7 @@ class World {
     let thinkMs = 40;
     w.sp = await SpServer.create({
       quiet: opts.quiet,
-      wasmBinary: opts.wasmBinary || fs.readFileSync(opts.noMobs ? MP_WASM_NO_MOBS : opts.allDrops ? MP_WASM_ALL_DROPS : MP_WASM),
+      wasmBinary: opts.wasmBinary || worldWasm(opts),
       extraImports: opts.extraImports, // instrumented builds, for analysis tools
       onThinkInterval: (ms) => { thinkMs = ms; },
     });
@@ -223,4 +229,4 @@ class World {
   }
 }
 
-module.exports = { World, CONN_REGIONS, reportAlive };
+module.exports = { World, CONN_REGIONS, reportAlive, worldWasm };
