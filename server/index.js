@@ -1,31 +1,42 @@
 // server/index.js — self-hosted florr.io (old) server.
 //
-//   node server/index.js [port] [--sp] [--all-drops]
+//   node server/index.js [port] [--sp] [--spawn-menu] [--no-mobs] [--all-drops]
 //
 // Serves the game (florr-local/static.florr.io/old/) and tunnels the client's
 // sp_server worker calls over a WebSocket at /ws. Open http://<host>:<port>/?mp
 // to play on this server (without ?mp the page runs its own local worker).
 //
-//   default  one shared world for everyone (server/mp-host.js)
-//   --sp     one private world per connection (sp_server unmodified, for comparison)
-//   --all-drops  every mob drops all of its possible drops (shared world only)
+//   default       one shared world for everyone (server/mp-host.js)
+//   --sp          one private world per connection
+//   --spawn-menu  players may pick their spawn level and petals on the title screen
+//                 (otherwise the menu is hidden and loadouts are ignored)
+//   --no-mobs     no mobs ever spawn
+//   --all-drops   every mob drops all of its possible drops (no effect with --no-mobs)
 //
 // Wire format (binary WebSocket frames):
-//   client -> server  u8 func (0 init, 1 send, 2 flush, 3 think, 4 keepalive) | i32 callbackId | payload
+//   client -> server  u8 func (0 init, 1 send, 2 flush, 3 think, 4 keepalive, 5 loadout) | i32 callbackId | payload
+//                     (func 5: UTF-8 JSON spawn loadout from the title screen, or "null"; see loadout.js)
 //   server -> client  i32 callbackId | u8 finalResponse | payload
-//                     (callbackId -2: session token for /ws?session=<token> resume)
+//                     (callbackId -2: session token for /ws?session=<token> resume;
+//                      callbackId -3: u8 1/0 when the player gains/loses its flower;
+//                      callbackId -4: UTF-8 JSON room options {spawnMenu}, sent on connect)
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { SpServer } = require('./sp-host');
-const { World } = require('./mp-host');
+const { World, reportAlive, worldWasm } = require('./mp-host');
+const Loadout = require('../florr-local/static.florr.io/old/loadout.js');
 
 const args = process.argv.slice(2);
 const PORT = parseInt(args.find((a) => /^\d+$/.test(a)), 10) || 3000;
 const SP_MODE = args.includes('--sp');
 const ALL_DROPS = args.includes('--all-drops');
+const NO_MOBS = args.includes('--no-mobs');
+const SPAWN_MENU = args.includes('--spawn-menu');
+const KNOWN = ['--sp', '--all-drops', '--no-mobs', '--spawn-menu'];
+for (const a of args) if (!/^\d+$/.test(a) && !KNOWN.includes(a)) { console.error(`Unknown option ${a} (options: ${KNOWN.join(' ')})`); process.exit(1); }
 const ROOT = path.join(__dirname, '..', 'florr-local', 'static.florr.io', 'old');
 
 const FUNCS = ['sp_server_init', 'sp_server_send', 'sp_server_flush', 'sp_server_think'];
@@ -148,6 +159,7 @@ function wsReader(socket, onMessage, onClose) {
 
 const GRACE_MS = +process.env.FLORR_GRACE_MS || 45000;
 const SESSION_CB = -2; // S2C callbackId carrying the session token
+const OPTIONS_CB = -4; // S2C callbackId carrying the room options (JSON)
 const CLOSE_UNKNOWN_SESSION = 4000;
 
 let world = null;
@@ -170,12 +182,20 @@ server.on('upgrade', async (req, socket) => {
   console.log(`[ws] #${id} connected from ${socket.remoteAddress}${token ? ' (resuming)' : ''}`);
 
   const send = (m) => { if (!socket.destroyed) socket.write(frameFor(m)); };
+  send({ callbackId: OPTIONS_CB, finalResponse: false, data: new Uint8Array(Buffer.from(JSON.stringify({ spawnMenu: SPAWN_MENU }))) });
 
   // Messages that arrive before the backend is ready are queued.
   let backend = null;
   const pending = [];
   const deliver = (msg) => {
     if (msg.length < 5) return;
+    if (msg[0] === 5) { // spawn loadout from the title screen (only with --spawn-menu)
+      if (!SPAWN_MENU) return;
+      let lo = null;
+      try { lo = JSON.parse(msg.subarray(5).toString('utf8')); } catch (e) { return; }
+      backend.setLoadout(lo);
+      return;
+    }
     const funcName = FUNCS[msg[0]];
     if (!funcName) return; // e.g. the page's keepalive (func 4): only refreshes the heartbeat
     const data = msg.length > 5 ? Uint8Array.from(msg.subarray(5)) : 0;
@@ -210,10 +230,19 @@ server.on('upgrade', async (req, socket) => {
   });
 
   if (SP_MODE) {
-    const sp = await SpServer.create({ quiet: true });
+    const sp = await SpServer.create({ quiet: true, wasmBinary: worldWasm({ noMobs: NO_MOBS, allDrops: ALL_DROPS }) });
     if (gone) { sp.destroy(); return; } // left while the world was starting
     sp.onResponse = send;
-    backend = { post: (m) => sp.post(m), close: () => sp.destroy() };
+    let loadout = null, alive = null;
+    backend = {
+      post: (m) => {
+        if (loadout && m.funcName === 'sp_server_send') Loadout.apply(sp.heap, loadout);
+        sp.post(m);
+        if (m.funcName === 'sp_server_flush') alive = reportAlive(sp.heap, alive, send);
+      },
+      setLoadout: (lo) => { loadout = Loadout.normalize(lo); },
+      close: () => sp.destroy(),
+    };
     pending.splice(0).forEach(deliver);
     return;
   }
@@ -243,9 +272,10 @@ server.on('upgrade', async (req, socket) => {
 });
 
 (async () => {
-  if (!SP_MODE) world = await World.create({ quiet: true, allDrops: ALL_DROPS });
+  if (!SP_MODE) world = await World.create({ quiet: true, allDrops: ALL_DROPS, noMobs: NO_MOBS });
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`florr.io (old) server — ${SP_MODE ? 'private world per connection (--sp)' : 'shared world'}${ALL_DROPS && !SP_MODE ? ', all drops' : ''}`);
+    console.log(`florr.io (old) server — ${SP_MODE ? 'private world per connection (--sp)' : 'shared world'}`);
+    console.log(`  spawn menu: ${SPAWN_MENU ? 'on' : 'off'} · mobs: ${NO_MOBS ? 'off' : 'on'} · drops: ${NO_MOBS ? 'n/a' : ALL_DROPS ? 'all' : 'normal'}`);
     console.log(`  Local: http://localhost:${PORT}/?mp`);
     console.log(`  LAN:   http://<your-LAN-IP>:${PORT}/?mp  (see \`ipconfig\`)`);
   });

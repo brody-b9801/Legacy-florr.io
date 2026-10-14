@@ -20,11 +20,17 @@ node server/index.js 3001
 
 ### Server options
 
-| Command | What it does |
+`node server/index.js [port] [options]` starts a room. Options can be combined:
+
+| Option | What it does |
 |---|---|
-| `node server/index.js [port]` | One shared world for everyone (default) |
-| `node server/index.js [port] --all-drops` | Shared world where every mob drops all of its possible petals |
-| `node server/index.js [port] --sp` | Each connection gets its own private world |
+| *(none)* | One shared world for everyone, normal mobs and drops, no spawn menu |
+| `--spawn-menu` | Players can pick their spawn level (1-99) and petals on the title screen. The level also sets the spawn zone (Easy / Medium / Hard) |
+| `--no-mobs` | No mobs ever spawn |
+| `--all-drops` | Every mob drops all of its possible petals (no effect with `--no-mobs`) |
+| `--sp` | Each connection gets its own private world |
+
+For example, `node server/index.js 3001 --spawn-menu --no-mobs` is a sandbox room for trying out loadouts.
 
 ### Playing over the internet
 
