@@ -53,6 +53,11 @@ Share the printed `https://<random-name>.trycloudflare.com/?mp` link. The addres
 - **Disconnects.**
   - Closing the tab removes your flower, through the game's own death logic.
   - A dropped connection only puts you on hold for 45 seconds. The page reconnects by itself and resumes the same flower.
+- **Spawn menu** (`--spawn-menu`).
+  - The engine keeps each player's level and petals in their saved progress, and reads them only when the player spawns. It also picks the spawn zone from that level: Easy up to 12, Medium up to 27, Hard above that.
+  - The title-screen menu (`spawn-menu.js`) sends the chosen loadout to the server. Right before a player without a flower spawns, the server writes the loadout into that progress (`loadout.js`), so the game levels the flower up and places it in the right zone.
+  - The petal cards in `petals.png` were captured from the game's own inventory bar.
+- **No mobs** (`--no-mobs`). `sp_server.mp.nomobs.wasm` patches the function that spawns mobs into a zone to always fail, so every zone stays empty. Things spawned by petals, like egg hatches, still work.
 - **Site lock.** `client.wasm` only starts on a few known hostnames. In `?mp` mode the page reports `localhost`, so the game works on any address.
 
 The full research notes are in [`research/NOTES.md`](research/NOTES.md): wire format, memory map, client slots, drop mechanics, and the approaches that didn't work.
@@ -61,7 +66,7 @@ The full research notes are in [`research/NOTES.md`](research/NOTES.md): wire fo
 
 | Path | Contents |
 |---|---|
-| `florr-local/static.florr.io/old/` | The game: original client and server files, plus the patched `sp_server.mp*.wasm` |
+| `florr-local/static.florr.io/old/` | The game: original client and server files, the patched `sp_server.mp*.wasm`, and the spawn menu (`spawn-menu.js`, `loadout.js`, `sp_worker.js` for offline play, `petals.png`) |
 | `server/` | `index.js` (HTTP + WebSocket server), `mp-host.js` (shared world), `sp-host.js` (runs sp_server in Node) |
 | `tools/` | `analyze-capture.js` (decode captures), `replay.js` (replay a capture headlessly), `instrument-wat.js` (call tracing), `patch-add-client.js` (builds the patched server) |
 | `captures/` | Recorded mouse and keyboard sessions used to decode the input protocol |
@@ -74,8 +79,8 @@ The patch tool works on WebAssembly text format, so it needs [wabt](https://gith
 
 ```sh
 npx wasm2wat --generate-names florr-local/static.florr.io/old/sp_server.wasm -o sp_named.wat
-node tools/patch-add-client.js sp_named.wat sp_mp.wat [--all-drops]
-npx wat2wasm sp_mp.wat -o florr-local/static.florr.io/old/sp_server.mp.wasm   # or sp_server.mp.alldrops.wasm
+node tools/patch-add-client.js sp_named.wat sp_mp.wat [--all-drops | --no-mobs]
+npx wat2wasm sp_mp.wat -o florr-local/static.florr.io/old/sp_server.mp.wasm   # or sp_server.mp.alldrops.wasm / sp_server.mp.nomobs.wasm
 ```
 
 ## Known limitations
