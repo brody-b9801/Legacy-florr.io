@@ -11,8 +11,9 @@
 //   --all-drops  every mob drops all of its possible drops (shared world only)
 //
 // Wire format (binary WebSocket frames):
-//   client -> server  u8 func (0 init, 1 send, 2 flush, 3 think) | i32 callbackId | payload
+//   client -> server  u8 func (0 init, 1 send, 2 flush, 3 think, 4 keepalive) | i32 callbackId | payload
 //   server -> client  i32 callbackId | u8 finalResponse | payload
+//                     (callbackId -2: session token for /ws?session=<token> resume)
 
 const http = require('http');
 const fs = require('fs');
@@ -81,27 +82,28 @@ function wsFrame(opcode, payload) {
 }
 
 const PING_MS = 5000; // heartbeat interval
-const DEAD_MS = 15000; // no frames (incl. pong) for this long = gone
+const DEAD_MS = +process.env.FLORR_DEAD_MS || 30000; // no frames (incl. pong / page keepalive) for this long = gone
 
-// Calls onMessage(Buffer) for each complete binary/text message and onClose()
-// exactly once when the peer leaves: close frame, TCP end/close, error, or a
+// Calls onMessage(Buffer) for each complete binary/text message and
+// onClose(clean) exactly once when the peer leaves (clean = it sent a close
+// frame, i.e. the tab was closed or reloaded, as opposed to a dropped link): close frame, TCP end/close, error, or a
 // missed heartbeat. Through a proxy (e.g. cloudflared) the TCP connection can
-// outlive the WebSocket, so 'close' alone is not enough. Browsers answer pings
-// even in background tabs, so idle-but-open tabs stay connected.
+// outlive the WebSocket, so 'close' alone is not enough. The page also sends a
+// keepalive every few seconds, since a proxy may answer or drop pings itself.
 function wsReader(socket, onMessage, onClose) {
   let buf = Buffer.alloc(0);
   let fragments = [];
   let lastSeen = Date.now();
   let done = false;
-  const finish = () => {
+  const finish = (clean) => {
     if (done) return;
     done = true;
     clearInterval(heartbeat);
     socket.destroy();
-    onClose();
+    onClose(clean === true);
   };
   const heartbeat = setInterval(() => {
-    if (Date.now() - lastSeen > DEAD_MS) { finish(); return; }
+    if (Date.now() - lastSeen > DEAD_MS) { finish(false); return; }
     if (!socket.destroyed) socket.write(wsFrame(0x9, Buffer.alloc(0)));
   }, PING_MS);
 
@@ -121,37 +123,53 @@ function wsReader(socket, onMessage, onClose) {
       if (masked) for (let i = 0; i < len; i++) payload[i] ^= buf[maskOff + (i & 3)];
       buf = buf.subarray(off + len);
 
-      if (opcode === 0x8) { if (!socket.destroyed) socket.write(wsFrame(0x8, Buffer.alloc(0))); finish(); return; }
+      if (opcode === 0x8) { if (!socket.destroyed) socket.write(wsFrame(0x8, Buffer.alloc(0))); finish(true); return; }
       if (opcode === 0x9) { socket.write(wsFrame(0xa, payload)); continue; }
       if (opcode === 0xa) continue;
       fragments.push(payload);
       if (fin) { const msg = Buffer.concat(fragments); fragments = []; onMessage(msg); }
     }
   });
-  socket.on('end', finish);
-  socket.on('close', finish);
-  socket.on('error', finish);
+  socket.on('end', () => finish(false));
+  socket.on('close', () => finish(false));
+  socket.on('error', () => finish(false));
 }
 
 // ---- game tunnel ----------------------------------------------------------
+//
+// Sessions: each shared-world player gets a token (sent as callbackId -2). A tab
+// that closes or reloads (close frame) leaves at once. If the socket just drops
+// (network, proxy, missed heartbeat), the player is suspended rather than killed: the flower stays in
+// the world and its updates stay queued (the client pulls them with flush, so
+// almost nothing is lost). The page's tunnel shim reconnects with
+// /ws?session=<token> and reattaches to the same player. Only if nobody comes
+// back within GRACE_MS is the flower killed. Unknown/expired tokens are refused
+// with close code 4000 so the page can reload and join fresh.
+
+const GRACE_MS = +process.env.FLORR_GRACE_MS || 45000;
+const SESSION_CB = -2; // S2C callbackId carrying the session token
+const CLOSE_UNKNOWN_SESSION = 4000;
 
 let world = null;
 let nextId = 1;
+const sessions = new Map(); // token -> { conn, socket, graceTimer }
+
+function frameFor(m) {
+  const data = m.data ? Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength) : Buffer.alloc(0);
+  const head = Buffer.alloc(5);
+  head.writeInt32LE(m.callbackId, 0);
+  head[4] = m.finalResponse ? 1 : 0;
+  return wsFrame(0x2, Buffer.concat([head, data]));
+}
 
 server.on('upgrade', async (req, socket) => {
-  if (req.url.split('?')[0] !== '/ws' || !wsAccept(req, socket)) { socket.destroy(); return; }
+  const url = new URL(req.url, 'http://x');
+  if (url.pathname !== '/ws' || !wsAccept(req, socket)) { socket.destroy(); return; }
   const id = nextId++;
-  const addr = socket.remoteAddress;
-  console.log(`[ws] #${id} connected from ${addr}`);
+  const token = url.searchParams.get('session');
+  console.log(`[ws] #${id} connected from ${socket.remoteAddress}${token ? ' (resuming)' : ''}`);
 
-  const send = (m) => {
-    if (socket.destroyed) return;
-    const data = m.data ? Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength) : Buffer.alloc(0);
-    const head = Buffer.alloc(5);
-    head.writeInt32LE(m.callbackId, 0);
-    head[4] = m.finalResponse ? 1 : 0;
-    socket.write(wsFrame(0x2, Buffer.concat([head, data])));
-  };
+  const send = (m) => { if (!socket.destroyed) socket.write(frameFor(m)); };
 
   // Messages that arrive before the backend is ready are queued.
   let backend = null;
@@ -159,14 +177,34 @@ server.on('upgrade', async (req, socket) => {
   const deliver = (msg) => {
     if (msg.length < 5) return;
     const funcName = FUNCS[msg[0]];
-    if (!funcName) return;
+    if (!funcName) return; // e.g. the page's keepalive (func 4): only refreshes the heartbeat
     const data = msg.length > 5 ? Uint8Array.from(msg.subarray(5)) : 0;
     backend.post({ funcName, callbackId: msg.readInt32LE(1), data });
   };
 
   let gone = false;
-  wsReader(socket, (msg) => (backend ? deliver(msg) : pending.push(msg)), () => {
+  let session = null;
+  wsReader(socket, (msg) => (backend ? deliver(msg) : pending.push(msg)), (clean) => {
     gone = true;
+    if (session) {
+      // Only act if this socket is still the session's current one (a resumed
+      // session may already have moved to a newer socket).
+      if (session.socket !== socket) return;
+      if (clean) { // tab closed or reloaded: leave now
+        console.log(`[ws] #${id} left`);
+        sessions.delete(session.token);
+        session.conn.close();
+        return;
+      }
+      console.log(`[ws] #${id} dropped; holding player for ${GRACE_MS / 1000}s`);
+      session.conn.send = () => {};
+      session.graceTimer = setTimeout(() => {
+        console.log(`[ws] #${id} did not come back; removing player`);
+        sessions.delete(session.token);
+        session.conn.close();
+      }, GRACE_MS);
+      return;
+    }
     console.log(`[ws] #${id} disconnected`);
     if (backend) backend.close();
   });
@@ -176,13 +214,29 @@ server.on('upgrade', async (req, socket) => {
     if (gone) { sp.destroy(); return; } // left while the world was starting
     sp.onResponse = send;
     backend = { post: (m) => sp.post(m), close: () => sp.destroy() };
-  } else {
-    backend = world.connect(send);
-    if (!backend) {
-      console.log(`[ws] #${id} rejected: server full`);
-      socket.end(wsFrame(0x8, Buffer.from([0x03, 0xf0, ...Buffer.from('server full')]))); // close 1008
+    pending.splice(0).forEach(deliver);
+    return;
+  }
+
+  if (token) {
+    session = sessions.get(token);
+    if (!session) {
+      console.log(`[ws] #${id} unknown or expired session; asking the page to rejoin`);
+      socket.end(wsFrame(0x8, Buffer.concat([Buffer.from([CLOSE_UNKNOWN_SESSION >> 8, CLOSE_UNKNOWN_SESSION & 255]), Buffer.from('session expired')])));
       return;
     }
+    clearTimeout(session.graceTimer);
+    const old = session.socket;
+    session.socket = socket;
+    if (old && !old.destroyed) old.destroy(); // overlapping reconnect: drop the stale socket quietly
+    session.conn.send = send;
+    backend = session.conn;
+    console.log(`[ws] #${id} resumed its player (${world.connections.size} connected)`);
+  } else {
+    backend = world.connect(send);
+    session = { token: crypto.randomBytes(16).toString('hex'), conn: backend, socket, graceTimer: null };
+    sessions.set(session.token, session);
+    send({ callbackId: SESSION_CB, finalResponse: false, data: new Uint8Array(Buffer.from(session.token)) });
     console.log(`[ws] #${id} joined the shared world (${world.connections.size} connected)`);
   }
   pending.splice(0).forEach(deliver);

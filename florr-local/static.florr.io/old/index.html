@@ -243,7 +243,8 @@ a:hover {
  * With ?mp in the URL, the sp_server worker is replaced by a WebSocket to
  * server/index.js (/ws), which runs the server side. ?mp=host:port targets
  * another server. Without ?mp the original local worker is used.
- * Wire format matches server/index.js.
+ * Wire format matches server/index.js. Dropped connections resume the same
+ * player via a session token (the server holds it for 45 s).
  * ====================================================================== */
 (function(){
   var mp = new URL(window.location).searchParams.get("mp");
@@ -255,28 +256,78 @@ a:hover {
   var FUNCS = { sp_server_init:0, sp_server_send:1, sp_server_flush:2, sp_server_think:3 };
   var RealWorker = window.Worker;
 
+  var WS_BASE = (location.protocol === "https:" ? "wss://" : "ws://") + host + "/ws";
+  var SESSION_CB = -2;            // server -> page: session token (see server/index.js)
+  var KEEPALIVE_MS = 5000;        // page -> server: func 4, keeps hidden tabs alive
+  var GIVE_UP_MS = 40000;         // server holds a dropped player for 45 s
+  var CLOSE_UNKNOWN_SESSION = 4000;
+
+  // Small "Reconnecting..." banner; the game canvas keeps its last frame meanwhile.
+  var banner = null;
+  function showBanner(text){
+    if(!banner){
+      banner = document.createElement("div");
+      banner.style.cssText = "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;" +
+        "background:rgba(0,0,0,.65);color:#fff;font:bold 16px Ubuntu,sans-serif;padding:8px 16px;border-radius:6px;pointer-events:none";
+      document.body.appendChild(banner);
+    }
+    banner.textContent = text;
+    banner.style.display = text ? "block" : "none";
+  }
+
+  // Same postMessage/onmessage interface as the sp_server worker, over a WebSocket.
+  // If the socket drops, reconnect with the session token and resume the same
+  // player; if the session is gone, reload the page to join fresh.
   function TunnelWorker(url){
     var self = this;
     this.onmessage = null;
     this.onerror = null;
-    this._queue = [];
-    this._ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + host + "/ws");
-    this._ws.binaryType = "arraybuffer";
-    this._ws.onopen = function(){
-      self._queue.forEach(function(b){ self._ws.send(b); });
-      self._queue = null;
-    };
-    this._ws.onmessage = function(ev){
-      var v = new DataView(ev.data);
-      var data = ev.data.byteLength > 5 ? new Uint8Array(ev.data, 5) : 0;
-      var msg = { callbackId: v.getInt32(0, true), finalResponse: v.getUint8(4) === 1, data: data };
-      if(self.onmessage) self.onmessage({ data: msg });
-    };
-    this._ws.onclose = function(){
-      console.warn("[mp] disconnected from " + host);
-      if(self.onerror) self.onerror(new Event("error"));
-    };
+    this._queue = [];          // outgoing frames before the first open
+    this._session = null;
+    this._closedByGame = false;
+    this._offlineSince = 0;
+    this._retryMs = 500;
+    this._connect();
+    this._keepalive = setInterval(function(){
+      if(self._ws && self._ws.readyState === 1) self._ws.send(new Uint8Array([4, 0, 0, 0, 0]));
+    }, KEEPALIVE_MS);
   }
+  TunnelWorker.prototype._connect = function(){
+    var self = this;
+    var ws = this._ws = new WebSocket(WS_BASE + (this._session ? "?session=" + this._session : ""));
+    ws.binaryType = "arraybuffer";
+    ws.onopen = function(){
+      if(self._offlineSince){ console.log("[mp] reconnected"); showBanner(""); }
+      self._offlineSince = 0;
+      self._retryMs = 500;
+      if(self._queue){ self._queue.forEach(function(b){ ws.send(b); }); self._queue = null; }
+    };
+    ws.onmessage = function(ev){
+      var v = new DataView(ev.data);
+      var cb = v.getInt32(0, true);
+      if(cb === SESSION_CB){
+        self._session = new TextDecoder().decode(new Uint8Array(ev.data, 5));
+        return;
+      }
+      var data = ev.data.byteLength > 5 ? new Uint8Array(ev.data, 5) : 0;
+      if(self.onmessage) self.onmessage({ data: { callbackId: cb, finalResponse: v.getUint8(4) === 1, data: data } });
+    };
+    ws.onclose = function(ev){
+      if(self._ws !== ws || self._closedByGame) return;
+      if(ev.code === CLOSE_UNKNOWN_SESSION || !self._session){
+        console.warn("[mp] session ended; reloading to rejoin");
+        showBanner("Rejoining...");
+        setTimeout(function(){ location.reload(); }, 500);
+        return;
+      }
+      if(!self._offlineSince) self._offlineSince = Date.now();
+      if(Date.now() - self._offlineSince > GIVE_UP_MS){ location.reload(); return; }
+      console.warn("[mp] connection lost; reconnecting");
+      showBanner("Reconnecting...");
+      setTimeout(function(){ self._connect(); }, self._retryMs);
+      self._retryMs = Math.min(self._retryMs * 2, 4000);
+    };
+  };
   TunnelWorker.prototype.postMessage = function(msg){
     var payload = msg.data ? new Uint8Array(msg.data.buffer || msg.data, msg.data.byteOffset || 0, msg.data.byteLength || msg.data.length) : null;
     var len = payload ? payload.length : 0;
@@ -284,9 +335,16 @@ a:hover {
     b[0] = FUNCS[msg.funcName];
     new DataView(b.buffer).setInt32(1, msg.callbackId, true);
     if(payload) b.set(payload, 5);
-    if(this._queue) this._queue.push(b); else this._ws.send(b);
+    if(this._queue) this._queue.push(b);
+    else if(this._ws.readyState === 1) this._ws.send(b);
+    // While reconnecting, calls are dropped: flushes repeat every frame, and the
+    // server ignores missing input counters.
   };
-  TunnelWorker.prototype.terminate = function(){ this._ws.close(); };
+  TunnelWorker.prototype.terminate = function(){
+    this._closedByGame = true;
+    clearInterval(this._keepalive);
+    this._ws.close();
+  };
   TunnelWorker.prototype.addEventListener = function(type, fn){ if(type === "message") this.onmessage = fn; };
 
   window.Worker = function(url, opts){

@@ -152,6 +152,22 @@ Open issues:
   resumes when the tab is visible again.
 - Not yet shown: two players on screen at once (needs two visible windows).
 
+## Disconnects and reconnects (server/index.js + index.html shim)
+- A close frame (tab closed or reloaded) means the player left: the flower is
+  killed at once (`damage` export), and the closed context keeps ticking ~3 s
+  so the death completes.
+- A dropped link (TCP end or error, or 30 s with no frames) **suspends** the
+  player: the flower stays and its updates stay queued (max 16; think pauses that
+  context when full). The page shim reconnects with `/ws?session=<token>` (token
+  sent as callbackId -2) and resumes the same player; because the client pulls
+  updates with flush, little is lost in the gap. With no resume within 45 s the
+  flower is killed, and later resumes get close code 4000, which makes the page
+  reload.
+- The page sends a keepalive (func 4) every 5 s, so background tabs and proxies
+  that swallow pings don't trigger timeouts.
+- Earlier bug (2026-10-14): any drop killed the player at once and the page had
+  no reconnect, so others saw that player freeze and then die.
+
 ## Mob drops
 - **Drops are rolled when a mob spawns**, in `$f144` (dcmp `f_oe`). The mob's
   definition holds a u8 count at +32 and 8-byte entries from +36 (u8 petal id,
