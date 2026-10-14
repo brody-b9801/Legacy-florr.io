@@ -21,12 +21,19 @@
 // per connection: the first advances the world by real dt, the rest (dt ~ 0)
 // serialize their own views into their own queues. With nobody connected the
 // world pauses.
+//
+// Disconnect: the player's flower is killed through the game's damage function
+// (exported as `damage` by the patch), and the closed context keeps ticking for a
+// few seconds so the death completes and the flower and petals are removed.
 
 const fs = require('fs');
 const path = require('path');
 const { SpServer } = require('./sp-host');
 
-const MP_WASM = path.join(__dirname, '..', 'florr-local', 'static.florr.io', 'old', 'sp_server.mp.wasm');
+const OLD = path.join(__dirname, '..', 'florr-local', 'static.florr.io', 'old');
+const MP_WASM = path.join(OLD, 'sp_server.mp.wasm');
+// Same build with tools/patch-add-client.js --all-drops: every mob carries all its possible drops.
+const MP_WASM_ALL_DROPS = path.join(OLD, 'sp_server.mp.alldrops.wasm');
 
 // [start, end) byte ranges swapped per connection.
 const CONN_REGIONS = [
@@ -43,6 +50,9 @@ const CONN_NODE = 419000; // the object's node in the pending-connection queue
 const CONN_TOKEN = 418956; // std::string token (12-byte libc++ SSO layout)
 const CONN_COUNTER = 418968; // last C2S message counter accepted
 const CUR_SLOT = 8545488;
+const SLOT0_CLIENT = 24936; // pointer to slot 0's client object
+const PLAYER_HEALTH_PATH = [120, 100, 164]; // client -> ... -> flower health component (hp f32 at +8)
+const DYING_TICKS = 60; // ~3 s of ticks after a disconnect to let the death play out
 const PENDING = { count: 25112, head: 25116, tail: 25120 };
 
 class Connection {
@@ -80,8 +90,12 @@ class Connection {
   close() {
     if (this.closed) return;
     this.closed = true;
-    this.world.connections.delete(this);
-    // TODO: despawn this connection's flower (it stays in the world for now).
+    this.send = () => {};
+    const w = this.world;
+    w.connections.delete(this);
+    // Kill the flower, then keep ticking this context briefly (output discarded)
+    // so the game finishes the death even if nobody else is connected.
+    if (this.run(() => w.killFlower())) w.dying.set(this, DYING_TICKS);
   }
 }
 
@@ -91,7 +105,7 @@ class World {
     let thinkMs = 40;
     w.sp = await SpServer.create({
       quiet: opts.quiet,
-      wasmBinary: opts.wasmBinary || fs.readFileSync(MP_WASM),
+      wasmBinary: opts.wasmBinary || fs.readFileSync(opts.allDrops ? MP_WASM_ALL_DROPS : MP_WASM),
       extraImports: opts.extraImports, // instrumented builds, for analysis tools
       onThinkInterval: (ms) => { thinkMs = ms; },
     });
@@ -114,6 +128,7 @@ class World {
 
   constructor() {
     this.connections = new Set();
+    this.dying = new Map(); // closed Connection -> ticks left
     this.nextId = 1;
     this.current = null;
   }
@@ -144,6 +159,24 @@ class World {
     return saved;
   }
 
+  // Kill the current client's flower through the game's own damage path, the way
+  // C2S opcode 3 does: damage(health, 0, health.hp, &info) with a zeroed 2-byte
+  // info struct. Its petals and the leaderboard entry go away with it.
+  // Must run inside a connection's context. Returns false if there's no flower.
+  killFlower() {
+    const v = this.view;
+    let p = v.getUint32(SLOT0_CLIENT, true);
+    for (const off of PLAYER_HEALTH_PATH) {
+      if (!p) return false;
+      p = v.getUint32(p + off, true);
+    }
+    if (!p) return false;
+    if (!this.scratch) this.scratch = this.sp.asm.q(16); // malloc; reused
+    v.setUint16(this.scratch, 0, true);
+    this.sp.asm.damage(p, 0, v.getFloat32(p + 8, true), this.scratch);
+    return true;
+  }
+
   connect(send) {
     let saved;
     if (this.spare) { saved = this.spare; this.spare = null; } else saved = this.createClient();
@@ -156,6 +189,10 @@ class World {
   tick() {
     const think = this.sp.asm.v;
     for (const c of this.connections) c.run(think);
+    for (const [c, left] of this.dying) {
+      c.run(() => { think(); this.sp.post({ funcName: 'sp_server_flush', callbackId: -1, data: 0 }); });
+      if (left <= 1) this.dying.delete(c); else this.dying.set(c, left - 1);
+    }
   }
 
   destroy() {

@@ -1,6 +1,6 @@
 // tools/patch-add-client.js
-// Builds sp_server.mp.wasm: the original sp_server.wasm plus an export
-// `add_client() -> i32` that creates one more client from the engine's client pool.
+// Builds sp_server.mp.wasm: the original sp_server.wasm plus exports
+// `add_client() -> i32` (creates one more engine client) and `damage(...)` (below).
 //
 // In the single-player build, init ($u) creates exactly one client inside its
 // run-once block (see research/NOTES.md, "Multi-client support inside the engine").
@@ -9,12 +9,12 @@
 // itself, and leaves the new client's index in $p1 (-1 on entry).
 //
 //   npx wasm2wat --generate-names sp_server.wasm -o sp_named.wat
-//   node tools/patch-add-client.js sp_named.wat sp_mp.wat
+//   node tools/patch-add-client.js sp_named.wat sp_mp.wat [--all-drops]
 //   npx wat2wasm sp_mp.wat -o florr-local/static.florr.io/old/sp_server.mp.wasm
 
 const fs = require('fs');
 
-const [, , inPath, outPath] = process.argv;
+const [, , inPath, outPath] = process.argv.filter((a) => !a.startsWith('--'));
 if (!inPath || !outPath) { console.error('Usage: node tools/patch-add-client.js <named.wat> <out.wat>'); process.exit(1); }
 
 const lines = fs.readFileSync(inPath, 'utf8').split('\n');
@@ -67,11 +67,39 @@ const fn = [
   '    local.get $p1)',
 ];
 
+// Also export the damage function ($f43: health component, source, amount, info*)
+// that C2S opcode 3 uses to kill the player's flower, so the host can despawn a
+// disconnected player through the game's normal death path.
+const DAMAGE_FN = '$f43';
+if (!lines.some((l) => l.startsWith(`  (func ${DAMAGE_FN} (type $t41) (param $p0 i32) (param $p1 i32) (param $p2 f32) (param $p3 i32)`))) {
+  throw new Error(`${DAMAGE_FN} signature changed; re-check the opcode 3 handler in $w`);
+}
+
+// --all-drops: every mob carries every drop it can roll. Mobs roll their drops
+// once at spawn in $f144: for each potential drop (8-byte entries at def+36:
+// u8 petal id, f32 chance at +4), `random() < t * chance` (t = 3 when world
+// flag [873] == 1, else 1) appends the petal, up to 6 drops. The comparison is
+// replaced with "always true"; the RNG still advances so other rolls are unchanged.
+// The 6-drop cap and the death-time legendary uniqueness check are left as is.
+if (process.argv.includes('--all-drops')) {
+  const s = lines.findIndex((l) => l.startsWith('  (func $f144 '));
+  const e = lines.findIndex((l, i) => i > s && /^  \(func /.test(l));
+  let hit = -1;
+  for (let i = s; i < e; i++) {
+    if (trim(i) === 'f32.lt' && /^if \$/.test(trim(i + 1)) && trim(i - 1) === 'f32.mul' &&
+        trim(i - 2) === 'f32.load offset=4' && trim(i - 6) === 'f32.const 0x1p-31 (;=4.65661e-10;)') { hit = i; break; }
+  }
+  if (hit < 0) throw new Error('drop roll comparison not found in $f144');
+  lines.splice(hit, 1, '    f32.lt', '    drop', '    i32.const 1');
+  console.log(`--all-drops: patched drop roll in $f144 at line ${hit + 1}`);
+}
+
 const firstExport = lines.findIndex((l) => /^  \(export /.test(l));
 const out = [
   ...lines.slice(0, firstExport),
   ...fn,
   '  (export "add_client" (func $sp_add_client))',
+  `  (export "damage" (func ${DAMAGE_FN}))`,
   ...lines.slice(firstExport),
 ];
 fs.writeFileSync(outPath, out.join('\n'));

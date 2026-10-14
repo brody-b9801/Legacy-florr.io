@@ -249,6 +249,9 @@ a:hover {
   var mp = new URL(window.location).searchParams.get("mp");
   if(mp === null) return;
   var host = mp || window.location.host;
+  // client.wasm refuses to start on unknown hostnames (site lock); present as
+  // localhost, which selects the sp_server worker path tunnelled below.
+  window.__florrHostname = "localhost";
   var FUNCS = { sp_server_init:0, sp_server_send:1, sp_server_flush:2, sp_server_think:3 };
   var RealWorker = window.Worker;
 

@@ -1,6 +1,6 @@
 // server/index.js — self-hosted florr.io (old) server.
 //
-//   node server/index.js [port] [--sp]
+//   node server/index.js [port] [--sp] [--all-drops]
 //
 // Serves the game (florr-local/static.florr.io/old/) and tunnels the client's
 // sp_server worker calls over a WebSocket at /ws. Open http://<host>:<port>/?mp
@@ -8,6 +8,7 @@
 //
 //   default  one shared world for everyone (server/mp-host.js)
 //   --sp     one private world per connection (sp_server unmodified, for comparison)
+//   --all-drops  every mob drops all of its possible drops (shared world only)
 //
 // Wire format (binary WebSocket frames):
 //   client -> server  u8 func (0 init, 1 send, 2 flush, 3 think) | i32 callbackId | payload
@@ -23,6 +24,7 @@ const { World } = require('./mp-host');
 const args = process.argv.slice(2);
 const PORT = parseInt(args.find((a) => /^\d+$/.test(a)), 10) || 3000;
 const SP_MODE = args.includes('--sp');
+const ALL_DROPS = args.includes('--all-drops');
 const ROOT = path.join(__dirname, '..', 'florr-local', 'static.florr.io', 'old');
 
 const FUNCS = ['sp_server_init', 'sp_server_send', 'sp_server_flush', 'sp_server_think'];
@@ -78,11 +80,33 @@ function wsFrame(opcode, payload) {
   return Buffer.concat([header, payload]);
 }
 
-// Calls onMessage(Buffer) for each complete binary/text message; handles ping/close.
+const PING_MS = 5000; // heartbeat interval
+const DEAD_MS = 15000; // no frames (incl. pong) for this long = gone
+
+// Calls onMessage(Buffer) for each complete binary/text message and onClose()
+// exactly once when the peer leaves: close frame, TCP end/close, error, or a
+// missed heartbeat. Through a proxy (e.g. cloudflared) the TCP connection can
+// outlive the WebSocket, so 'close' alone is not enough. Browsers answer pings
+// even in background tabs, so idle-but-open tabs stay connected.
 function wsReader(socket, onMessage, onClose) {
   let buf = Buffer.alloc(0);
   let fragments = [];
+  let lastSeen = Date.now();
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    clearInterval(heartbeat);
+    socket.destroy();
+    onClose();
+  };
+  const heartbeat = setInterval(() => {
+    if (Date.now() - lastSeen > DEAD_MS) { finish(); return; }
+    if (!socket.destroyed) socket.write(wsFrame(0x9, Buffer.alloc(0)));
+  }, PING_MS);
+
   socket.on('data', (chunk) => {
+    lastSeen = Date.now();
     buf = Buffer.concat([buf, chunk]);
     for (;;) {
       if (buf.length < 2) return;
@@ -97,15 +121,16 @@ function wsReader(socket, onMessage, onClose) {
       if (masked) for (let i = 0; i < len; i++) payload[i] ^= buf[maskOff + (i & 3)];
       buf = buf.subarray(off + len);
 
-      if (opcode === 0x8) { socket.end(wsFrame(0x8, Buffer.alloc(0))); return; }
+      if (opcode === 0x8) { if (!socket.destroyed) socket.write(wsFrame(0x8, Buffer.alloc(0))); finish(); return; }
       if (opcode === 0x9) { socket.write(wsFrame(0xa, payload)); continue; }
       if (opcode === 0xa) continue;
       fragments.push(payload);
       if (fin) { const msg = Buffer.concat(fragments); fragments = []; onMessage(msg); }
     }
   });
-  socket.on('close', onClose);
-  socket.on('error', () => socket.destroy());
+  socket.on('end', finish);
+  socket.on('close', finish);
+  socket.on('error', finish);
 }
 
 // ---- game tunnel ----------------------------------------------------------
@@ -139,13 +164,16 @@ server.on('upgrade', async (req, socket) => {
     backend.post({ funcName, callbackId: msg.readInt32LE(1), data });
   };
 
+  let gone = false;
   wsReader(socket, (msg) => (backend ? deliver(msg) : pending.push(msg)), () => {
+    gone = true;
     console.log(`[ws] #${id} disconnected`);
     if (backend) backend.close();
   });
 
   if (SP_MODE) {
     const sp = await SpServer.create({ quiet: true });
+    if (gone) { sp.destroy(); return; } // left while the world was starting
     sp.onResponse = send;
     backend = { post: (m) => sp.post(m), close: () => sp.destroy() };
   } else {
@@ -161,9 +189,9 @@ server.on('upgrade', async (req, socket) => {
 });
 
 (async () => {
-  if (!SP_MODE) world = await World.create({ quiet: true });
+  if (!SP_MODE) world = await World.create({ quiet: true, allDrops: ALL_DROPS });
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`florr.io (old) server — ${SP_MODE ? 'private world per connection (--sp)' : 'shared world'}`);
+    console.log(`florr.io (old) server — ${SP_MODE ? 'private world per connection (--sp)' : 'shared world'}${ALL_DROPS && !SP_MODE ? ', all drops' : ''}`);
     console.log(`  Local: http://localhost:${PORT}/?mp`);
     console.log(`  LAN:   http://<your-LAN-IP>:${PORT}/?mp  (see \`ipconfig\`)`);
   });

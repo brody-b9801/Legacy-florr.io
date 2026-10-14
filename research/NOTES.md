@@ -152,6 +152,28 @@ Open issues:
   resumes when the tab is visible again.
 - Not yet shown: two players on screen at once (needs two visible windows).
 
+## Mob drops
+- **Drops are rolled when a mob spawns**, in `$f144` (dcmp `f_oe`). The mob's
+  definition holds a u8 count at +32 and 8-byte entries from +36 (u8 petal id,
+  f32 chance at +4). For each entry, `random() < t * chance` appends the petal to
+  the mob's drop list. `t` is 3.0 when world byte [873] == 1 (a built-in 3x mode),
+  otherwise 1.0. A mob carries at most 6 drops.
+- RNG: `std::minstd_rand` (48271, Schrage 44488/3399), state at 8573024
+  (8573028 is used for shuffles); `random() = (x - 1) * 2^-31`.
+- Mob definitions: a static table at 8548484..8550920, 116 bytes each. No mob
+  has more than 6 possible drops, so the cap never truncates.
+- Drop list (`entity[51]`, byte offset 204): 16-byte pooled object {entity*, f32,
+  u8 count at +8, petal ids at +9..+15 (room for 7)}.
+- **On death** (`f_ra`/`$f43` → `B_ua`), every listed petal is spawned. Exception:
+  a rarity-5 petal is skipped if another player already has it equipped, or if
+  the same petal is already lying on the ground.
+- The petal table is at 8545792, 52 bytes per petal id 1..38; field [6] is rarity.
+- `f_ra` also runs the player death penalty: it shuffles the inventory by rarity
+  with 10% and 1% rolls (not fully decoded).
+- `tools/patch-add-client.js --all-drops` replaces the spawn roll with "always
+  true" → `sp_server.mp.alldrops.wasm`; `node server/index.js --all-drops` uses it.
+  Measured: 0.35 → 5.3 drops carried per mob (every mob carries all its possible drops).
+
 ## Stage 3 (works)
 `node server/index.js 3001 --sp` gives each WebSocket connection a private world.
 Opening `http://localhost:3001/?mp` (tunnel shim in index.html) spawned and played
