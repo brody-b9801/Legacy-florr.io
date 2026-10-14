@@ -125,7 +125,10 @@ a:hover {
  *   __proto.count()       -> packets captured so far
  *   __proto.summary()     -> counts grouped by direction / funcName / length
  *   copy(__proto.dump())  -> full JSON capture to clipboard (save as capture1.json)
+ *   __proto.mark(label)   -> insert a labeled marker into the log
+ *   __proto.save(label)   -> POST the log to serve.js -> captures/<label>.json
  *   __proto.clear()       -> reset
+ * Mouse/keyboard events are also logged (dir "IN") for correlation.
  * ====================================================================== */
 (function(){
   var log = [];
@@ -139,14 +142,28 @@ a:hover {
   }
   function hex(u8){
     if(!u8 || !u8.length) return "";
-    var s="", n=Math.min(u8.length,8192);
+    var s="", n=u8.length;
     for(var i=0;i<n;i++){ var h=u8[i].toString(16); s+=(h.length<2?"0":"")+h; }
     return s;
   }
-  function record(dir, name, u8){
-    log.push({ seq: seq++, t: performance.now(), dir: dir, name: name||"",
-               len: u8?u8.length:0, hex: hex(u8) });
+  function record(dir, name, u8, extra){
+    var r = { seq: seq++, t: performance.now(), dir: dir, name: name||"",
+              len: u8?u8.length:0, hex: hex(u8) };
+    if(extra) for(var k in extra) r[k] = extra[k];
+    log.push(r);
   }
+  // Input events (dir "IN") so captures can be correlated with mouse/keyboard
+  // actions. mousemove is throttled to one record per 50ms.
+  var lastMove = 0;
+  function inputRec(name, extra){ record("IN", name, null, extra); }
+  window.addEventListener("keydown", function(e){ if(!e.repeat) inputRec("keydown", {key:e.key, code:e.code}); }, true);
+  window.addEventListener("keyup", function(e){ inputRec("keyup", {key:e.key, code:e.code}); }, true);
+  window.addEventListener("mousedown", function(e){ inputRec("mousedown", {button:e.button, x:e.clientX, y:e.clientY}); }, true);
+  window.addEventListener("mouseup", function(e){ inputRec("mouseup", {button:e.button, x:e.clientX, y:e.clientY}); }, true);
+  window.addEventListener("mousemove", function(e){
+    var now = performance.now(); if(now - lastMove < 50) return; lastMove = now;
+    inputRec("mousemove", {x:e.clientX, y:e.clientY, w:innerWidth, h:innerHeight});
+  }, true);
   var diag = { post:0, onmsgSet:0, addEvt:0, s2c:0, c2s:0 };
   window.__proto = {
     log: log,
@@ -154,6 +171,13 @@ a:hover {
     count: function(){ return log.length; },
     clear: function(){ log.length=0; seq=0; return "cleared"; },
     dump: function(){ return JSON.stringify(log); },
+    // Annotate the log, e.g. __proto.mark("kbd: hold W").
+    mark: function(label){ record("MARK", label, null); return label; },
+    // POST the capture to serve.js, which writes captures/<label>.json.
+    save: function(label){
+      return fetch("/__capture?label=" + encodeURIComponent(label), { method: "POST", body: JSON.stringify(log) })
+        .then(function(r){ return r.text(); });
+    },
     summary: function(){
       var by={}; log.forEach(function(r){
         var k=r.dir+" "+r.name+" len="+r.len; by[k]=(by[k]||0)+1;
@@ -172,7 +196,7 @@ a:hover {
       try {
         diag.post++;
         if(diag.post <= 3) console.log("[proto] postMessage seen, keys:", msg && typeof msg === "object" ? Object.keys(msg) : typeof msg);
-        if(msg && msg.funcName){ diag.c2s++; record("C2S", msg.funcName, toU8(msg.data)); }
+        if(msg && msg.funcName){ diag.c2s++; record("C2S", msg.funcName, toU8(msg.data), {cb: msg.callbackId}); }
       } catch(e){ console.warn("[proto] post hook err", e); }
       return origPost.apply(this, arguments);
     };
@@ -182,7 +206,7 @@ a:hover {
       if(type === "message" && typeof fn === "function"){
         diag.addEvt++;
         var wrapped = function(ev){
-          try { var d=ev.data; if(d && d.data && !d.target){ diag.s2c++; record("S2C","response",toU8(d.data)); } } catch(e){}
+          try { var d=ev.data; if(d && d.data && !d.target){ diag.s2c++; record("S2C","response",toU8(d.data), {cb: d.callbackId, fin: !!d.finalResponse}); } } catch(e){}
           return fn.apply(this, arguments);
         };
         return origAdd.call(this, type, wrapped, opts);
@@ -202,7 +226,7 @@ a:hover {
           if(diag.onmsgSet <= 3) console.log("[proto] onmessage assigned on a worker");
           if(typeof fn === "function"){
             var wrapped = function(ev){
-              try { var d=ev.data; if(d && d.data && !d.target){ diag.s2c++; record("S2C","response",toU8(d.data)); } } catch(e){}
+              try { var d=ev.data; if(d && d.data && !d.target){ diag.s2c++; record("S2C","response",toU8(d.data), {cb: d.callbackId, fin: !!d.finalResponse}); } } catch(e){}
               return fn.apply(this, arguments);
             };
             onmsgDesc.set.call(this, wrapped);
