@@ -23,7 +23,26 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
 };
 
+const CAPTURES = path.join(__dirname, 'captures');
+
 const server = http.createServer((req, res) => {
+  // Protocol-capture upload from the index.html harness: __proto.save(label).
+  if (req.method === 'POST' && req.url.startsWith('/__capture')) {
+    const label = (new URL(req.url, 'http://x').searchParams.get('label') || 'capture')
+      .replace(/[^a-zA-Z0-9_.-]/g, '_');
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      fs.mkdirSync(CAPTURES, { recursive: true });
+      const dest = path.join(CAPTURES, label + '.json');
+      fs.writeFileSync(dest, Buffer.concat(chunks));
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('saved ' + dest);
+      console.log('capture saved: ' + dest);
+    });
+    return;
+  }
+
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
 

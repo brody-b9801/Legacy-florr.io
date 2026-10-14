@@ -1655,7 +1655,9 @@ m || (m = typeof Module !== 'undefined' ? Module : {});
                 return "https:" == location.protocol
             },
             133686: function() {
-                return da(location.hostname)
+                // The wasm only starts on localhost / static.florr.io / m28.io.
+                // index.html sets __florrHostname in ?mp mode so it runs on any host.
+                return da(window.__florrHostname || location.hostname)
             },
             133733: function() {
                 return -1 != navigator.userAgent.indexOf("iPhone") || -1 != navigator.userAgent.indexOf("iPad") || -1 != navigator.userAgent.indexOf("Android") || -1 != navigator.userAgent.indexOf("Mobile") || -1 != navigator.userAgent.indexOf("Tablet")
