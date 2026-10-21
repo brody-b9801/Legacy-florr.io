@@ -18,9 +18,14 @@ html {
 }
 
 body {
-    /* Centred content column, full height so the edges run top to bottom */
+    /* Centred content column, exactly one screen tall; the video takes whatever
+       height the text above leaves. min-height stops it collapsing on tiny screens */
     max-width: var(--column-width);
-    min-height: 100vh;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 480px;
+    display: flex;
+    flex-direction: column;
     margin: 0 auto;
     padding: 8px 20px;
     box-sizing: border-box;
@@ -42,15 +47,28 @@ body {
     gap: 15px;
 }
 
+/* Keep the description tucked under the title */
+.header h1 {
+    margin-bottom: 0;
+}
+
+.header + p {
+    margin-top: 20px;
+}
+
 .videoContainer {
-    margin: 20px auto 0;
+    flex: 1;
+    min-height: 0;
+    container-type: size;
+    margin-top: 10px;
     padding: 10px 20px;
     box-sizing: border-box;
 }
 
+/* Largest 16:9 box that fits the container both ways */
 .video {
     display: block;
-    width: min(100%, calc((100vh - 40px) * 16 / 9));
+    width: min(100cqw, 100cqh * 16 / 9);
     margin: 0 auto;
     height: auto;
     aspect-ratio: 16 / 9;
@@ -86,9 +104,9 @@ body {
 
 .pagebreak {
     width: 100px;
-    margin-top: 30px;
+    margin-top: 20px;
 }
 
 .buttonContainer {
-    margin-top: 30px;
+    margin-top: 10px;
 }
