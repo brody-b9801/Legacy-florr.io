@@ -236,8 +236,8 @@ server.on('upgrade', async (req, socket) => {
     let loadout = null, alive = null;
     backend = {
       post: (m) => {
-        if (loadout && m.funcName === 'sp_server_send') Loadout.apply(sp.heap, loadout);
-        sp.post(m);
+        if (loadout && m.funcName === 'sp_server_send') Loadout.during(() => sp.heap, loadout, () => sp.post(m));
+        else sp.post(m);
         if (m.funcName === 'sp_server_flush') alive = reportAlive(sp.heap, alive, send);
       },
       setLoadout: (lo) => { loadout = Loadout.normalize(lo); },

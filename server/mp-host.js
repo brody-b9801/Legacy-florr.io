@@ -105,10 +105,10 @@ class Connection {
       return;
     }
     this.run(() => {
-      // The spawn request arrives in a send; while the player has no flower, keep
-      // the chosen loadout in its saved progress so the next spawn uses it.
-      if (this.loadout && msg.funcName === 'sp_server_send') Loadout.apply(this.world.sp.heap, this.loadout);
-      this.world.sp.post(msg);
+      // The spawn request arrives in a send; while the player has no flower, put
+      // the chosen loadout in its saved progress for the duration of the send.
+      if (this.loadout && msg.funcName === 'sp_server_send') Loadout.during(() => this.world.sp.heap, this.loadout, () => this.world.sp.post(msg));
+      else this.world.sp.post(msg);
       if (msg.funcName === 'sp_server_flush') this.alive = reportAlive(this.world.sp.heap, this.alive, this.send);
     });
   }

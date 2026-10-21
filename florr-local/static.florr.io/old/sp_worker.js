@@ -15,7 +15,10 @@ importScripts('loadout.js', 'sp_server.js');
   self.onmessage = function (e) {
     var d = e.data;
     if (d && d.funcName === 'florr_loadout') { loadout = florrLoadout.normalize(d.loadout); return; }
-    if (loadout && d && d.funcName === 'sp_server_send' && Module.asm) florrLoadout.apply(new Uint8Array(Module.asm.o.buffer), loadout);
+    var that = this;
+    if (loadout && d && d.funcName === 'sp_server_send' && Module.asm) {
+      return florrLoadout.during(function () { return new Uint8Array(Module.asm.o.buffer); }, loadout, function () { return handle.call(that, e); });
+    }
     // Tell the page whether the player has a flower (it shows the menu while not).
     if (d && d.funcName === 'sp_server_flush' && Module.asm) {
       var now = florrLoadout.hasFlower(new Uint8Array(Module.asm.o.buffer));

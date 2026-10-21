@@ -62,7 +62,8 @@
 
   // ---- state ----------------------------------------------------------------
 
-  var state = { enabled: false, level: 1, primary: [], secondary: [] };
+  var DEFAULT_LEVEL = 45;
+  var state = { enabled: false, level: DEFAULT_LEVEL, primary: [], secondary: [] };
   try { var saved = JSON.parse(localStorage.getItem(STORE)); if (saved) state = Object.assign(state, saved); } catch (e) {}
   var sel = { row: 'primary', i: 0 }; // slot that the next palette click fills
 
@@ -194,9 +195,14 @@
     body = q('.sm-body'); levelRange = q('input[type=range]'); levelNum = q('input[type=number]');
     zoneEl = q('.sm-zone'); primaryRow = q('.sm-row.primary'); secondaryRow = q('.sm-row.secondary'); enabledBox = q('.sm-on');
 
-    // Keep keys and clicks away from the game while using the menu.
+    // Keep keys and clicks away from the game while using the menu. Enter still
+    // reaches the game (continue / spawn), with focus taken off the menu first so
+    // a typed level is committed before the spawn.
     ['keydown', 'keyup', 'keypress', 'mousedown', 'mouseup', 'click', 'wheel', 'touchstart', 'touchend'].forEach(function (t) {
-      root.addEventListener(t, function (e) { e.stopPropagation(); });
+      root.addEventListener(t, function (e) {
+        if (e.key === 'Enter') { if (root.contains(document.activeElement)) document.activeElement.blur(); return; }
+        e.stopPropagation();
+      });
     });
     root.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
@@ -207,7 +213,7 @@
     levelRange.oninput = function () { setLevel(levelRange.value); };
     levelNum.onchange = function () { setLevel(levelNum.value); };
     q('.sm-clear').onclick = function () { state.primary = []; state.secondary = []; sel = { row: 'primary', i: 0 }; changed(); };
-    q('.sm-basic').onclick = function () { state.level = 1; state.primary = []; state.secondary = []; sel = { row: 'primary', i: 0 }; changed(); };
+    q('.sm-basic').onclick = function () { state.level = DEFAULT_LEVEL; state.primary = []; state.secondary = []; sel = { row: 'primary', i: 0 }; changed(); };
     q('.sm-collapse').onclick = function () { root.classList.toggle('collapsed'); this.textContent = root.classList.contains('collapsed') ? '▸' : '▾'; };
 
     var pal = q('.sm-palette');

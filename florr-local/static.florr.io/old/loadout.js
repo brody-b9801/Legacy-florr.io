@@ -50,20 +50,45 @@
   }
 
   // Write the loadout into the current (slot 0) client if it has no flower, so
-  // its next spawn uses it. heap: Uint8Array over wasm memory. Returns true if written.
+  // a spawn request handled right after uses it. heap: Uint8Array over wasm
+  // memory. Returns what restore() needs to undo the write, or null.
   function apply(heap, lo) {
-    if (!lo) return false;
+    if (!lo) return null;
     var v = new DataView(heap.buffer, heap.byteOffset, heap.byteLength);
     var p = v.getUint32(CLIENT_PTR, true);
-    if (!p) return false;
+    if (!p) return null;
     var client = v.getUint32(p + CLIENT_OFF, true);
-    if (!client || v.getUint32(client + FLOWER, true)) return false;
+    if (!client || v.getUint32(client + FLOWER, true)) return null;
+    var undo = { client: client, before: heap.slice(client, client + COUNT + 1) };
     var bytes = petalBytes(lo);
     heap[client + LEVEL] = lo.level;
     heap.fill(0, client + PETALS, client + PETALS + MAX_PETALS);
     heap.set(bytes, client + PETALS);
     heap[client + COUNT] = bytes.length;
-    return true;
+    undo.written = heap.slice(client, client + COUNT + 1);
+    return undo;
+  }
+
+  // Put back every byte apply() changed that the game hasn't changed since.
+  // The game tells the client about changes to these fields with per-field
+  // change stamps (client+40 and up, which more than 12 petal ids overlap);
+  // apply() writes around that, so leaving its values in place would let the
+  // client's copy drift (it ends up drawing petal id 0 on the title screen
+  // after the next death, which crashes it).
+  function restore(heap, undo) {
+    if (!undo) return;
+    for (var i = 0; i < undo.written.length; i++) {
+      var a = undo.client + i;
+      if (undo.written[i] !== undo.before[i] && heap[a] === undo.written[i]) heap[a] = undo.before[i];
+    }
+  }
+
+  // Run fn (one sp_server_send call) with the loadout in place, so a spawn
+  // request in it uses the loadout, then undo the write. getHeap returns a
+  // current Uint8Array over wasm memory (memory can grow during fn).
+  function during(getHeap, lo, fn) {
+    var undo = apply(getHeap(), lo);
+    try { return fn(); } finally { restore(getHeap(), undo); }
   }
 
   // Whether the current (slot 0) client has a flower. The page shows the spawn
@@ -75,7 +100,7 @@
     return !!(client && v.getUint32(client + FLOWER, true));
   }
 
-  var api = { normalize: normalize, apply: apply, hasFlower: hasFlower, slotCount: slotCount, zoneOf: zoneOf, ZONES: ZONES, MAX_LEVEL: MAX_LEVEL, SECONDARY: SECONDARY };
+  var api = { normalize: normalize, apply: apply, restore: restore, during: during, hasFlower: hasFlower, slotCount: slotCount, zoneOf: zoneOf, ZONES: ZONES, MAX_LEVEL: MAX_LEVEL, SECONDARY: SECONDARY };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.florrLoadout = api;
 })(typeof self !== 'undefined' ? self : this);
