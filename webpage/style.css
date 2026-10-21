@@ -1,0 +1,96 @@
+/* The page edges outside the content column */
+html {
+    background-color: #91ffa7;
+}
+
+/* The column is sized to fit a whole number of thumbnail cards, so the coloured
+   edges hug the content: 3 cards wide on big screens, 2 on medium, full width on phones */
+:root {
+    --card-width: 360px;
+    --card-gap: 20px;
+    /* body padding + videoContainer padding, on both sides */
+    --column-padding: 80px;
+    --column-width: calc(2 * var(--card-width) + var(--card-gap) + var(--column-padding));
+}
+
+@media (min-width: 1200px) {
+    :root {
+        --column-width: calc(3 * var(--card-width) + 2 * var(--card-gap) + var(--column-padding));
+    }
+}
+
+body {
+    /* Centred content column, full height so the edges run top to bottom */
+    max-width: var(--column-width);
+    min-height: 100vh;
+    margin: 0 auto;
+    padding: 8px 20px;
+    box-sizing: border-box;
+    text-align: center;
+    font-family: "VT323", monospace;
+    background-color: #5ba369;
+    color: white;
+    text-shadow:
+        -1px 0 0 black,
+         1px 0 0 black,
+         0 -1px 0 black,
+         0  1px 0 black;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 15px;
+}
+
+.videoContainer {
+    margin: 20px auto 0;
+    padding: 10px 20px;
+    box-sizing: border-box;
+}
+
+/* Fills the column at 16:9 so YouTube picks a high-resolution stream */
+.video {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    border: 2px white solid;
+    box-sizing: border-box;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  height: 2.5em;
+  box-sizing: border-box;
+  vertical-align: middle;
+  padding: 0 20px;
+  background-color: #f0dd77;
+  color: black;
+  text-decoration: none;
+  text-shadow: none;
+  border-radius: 5px;
+  font-weight: bold;
+  transition: background-color 0.3s ease;
+}
+
+.githubIcon {
+  display: block;
+  width: 1.2em;
+  height: 1.2em;
+}
+
+.link:hover {
+  background-color: #c4b24f;
+}
+
+.pagebreak {
+    width: 100px;
+    margin-top: 30px;
+}
+
+.buttonContainer {
+    margin-top: 30px;
+}
